@@ -1,0 +1,11 @@
+langchain
+langgraph
+langchain-groq
+langchain-community
+faiss-cpu
+python-dotenv
+groq
+requests
+numpy
+fastapi
+uvicorn[standard]

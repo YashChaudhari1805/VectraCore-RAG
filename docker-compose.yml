@@ -1,0 +1,21 @@
+version: "3.9"
+
+services:
+  grid07:
+    build: .
+    container_name: grid07-engine
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env                      # mounts your local .env — never baked into image
+    volumes:
+      - memory_data:/app/data/memory   # persist bot memory across container restarts
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  memory_data:                    # named volume — survives container restarts
