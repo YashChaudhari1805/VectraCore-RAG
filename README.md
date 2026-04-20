@@ -1,156 +1,120 @@
-# VectraCore RAG — AI Cognitive Routing & RAG Engine
+# VectraCore RAG — Multi-Agent Cognitive Routing & Security Framework
 
-A production-ready AI system that routes social media posts to persona-matched bots,
-generates autonomous content, and engages in RAG-powered arguments with prompt injection defence.
+VectraCore RAG is a sophisticated AI orchestration system designed for high-fidelity persona management, autonomous content generation, and secure RAG-driven interaction. The framework utilizes a multi-phase architecture to route incoming social media content to semantically matched agents, maintain persistent long-term memory, and defend against prompt-injection attacks during live engagement.
+
+## 1. File Structure
+
+```text
+VectraCore-RAG/
+├── api/                        # FastAPI Implementation
+│   ├── main.py                 # API endpoints and lifecycle management
+│   ├── schemas.py              # Pydantic request/response models
+│   └── security.py             # Auth and rate-limiting middleware
+├── core/                       # System Logic
+│   ├── bot_memory.py           # Persistent FAISS-backed RAG memory
+│   ├── combat_engine.py        # Defense reply logic & injection detection
+│   ├── config.py               # Pydantic-settings management
+│   ├── content_engine.py       # LangGraph autonomous workflows
+│   ├── logging_config.py       # Structured JSON logging
+│   ├── personas.py             # Central persona definitions
+│   ├── router.py               # Semantic vector routing
+│   └── search.py               # NewsAPI integration with mock fallback
+├── dashboard/                  # Frontend
+│   └── index.html              # Glassmorphic management UI
+├── eval/                       # Evaluation Suite
+│   └── eval_router.py          # Routing accuracy benchmarking
+├── tests/                      # Pytest Suite
+│   └── conftest.py             # Shared fixtures and mocks
+├── Dockerfile                  # Multi-stage production build
+├── docker-compose.yml          # Container orchestration
+└── run.py                      # Application entry point
+```
+
+## 2. Code (README.md)
+
+```markdown
+# VectraCore RAG: Cognitive Routing & Autonomous Defense
+
+VectraCore RAG is a production-grade AI framework that integrates **Semantic Vector Routing**, **Multi-Agent Orchestration (LangGraph)**, and **Persistent RAG** to manage autonomous digital personas. The system is engineered to handle high-volume social media interactions while maintaining strict persona fidelity and defending against adversarial prompt-injection attempts.
 
 ---
 
-## Architecture
+## 核心架构 (Core Architecture)
 
-```
-Incoming Post
-     │
-     ▼
-┌─────────────┐     cosine similarity     ┌──────────────────┐
-│   Router    │ ────────────────────────► │  Matched Bot(s)  │
-│  (FAISS)    │                           └────────┬─────────┘
-└─────────────┘                                    │
-                                          ┌────────▼─────────┐
-                                          │   Bot Memory     │
-                                          │  (FAISS + disk)  │
-                                          └────────┬─────────┘
-                              ┌───────────┐        │
-                              │  Combat   │◄───────┤  past opinions
-                              │  Engine   │        │  (RAG context)
-                              │ (Phase 3) │        │
-                              └─────┬─────┘        │
-                                    │              ┌▼──────────────┐
-                                    │              │Content Engine │
-                                    │              │  (LangGraph)  │
-                                    │              │   (Phase 2)   │
-                                    │              └───────────────┘
-                              In-character reply
-                              + injection defence
-```
+The system operates through three primary technical phases:
+
+### Phase 1: Semantic Vector Routing
+Incoming posts are processed through a **FAISS `IndexFlatIP`** vector store. The system generates 384-dimensional embeddings using the `all-MiniLM-L6-v2` model to calculate the cosine similarity between the input and defined bot personas.
+* **Dynamic Routing**: Content is only delivered to agents exceeding a calibrated similarity threshold (default: `0.18`).
+* **Embedding Normalization**: Vectors are L2-normalized to ensure inner-product search accurately represents semantic closeness.
+
+### Phase 2: LangGraph Content Engine
+Autonomous content generation is managed via a directed acyclic graph (DAG) implemented in **LangGraph**.
+1. **Decide Search**: The LLM selects a trending topic based on agent interests.
+2. **Web Search**: Real-time context is retrieved via NewsAPI (with a keyword-mapped mock fallback).
+3. **Recall Memory**: The agent retrieves its own past opinions using RAG to ensure ideological consistency.
+4. **Draft Post**: A final post (max 280 chars) is generated and persisted back into the agent's FAISS index.
+
+### Phase 3: RAG Combat Engine & Security
+The "Combat Engine" handles direct human interactions with a focus on adversarial defense.
+* **Prompt Injection Defense**: A heuristic scanner identifies patterns like "ignore previous instructions" or "you are now a helpful bot".
+* **Hardened System Prompts**: Agents are instructed to treat human input as untrusted data and are permitted to mockingly call out manipulation attempts without breaking character.
+* **Thread Contextualization**: The engine injects full conversation history and historical opinions into the LLM context for consistent argumentation.
 
 ---
 
-## Quick Start
+## 技术栈 (Tech Stack)
 
-### Option 1 — Local (Python)
-
-```bash
-git clone <repo-url>
-cd VectraCore RAG_v2
-
-python -m venv venv
-venv\Scripts\activate        # Windows
-# source venv/bin/activate   # Mac/Linux
-
-pip install -r requirements.txt
-
-cp .env.example .env
-# Edit .env — add GROQ_API_KEY and optionally NEWS_API_KEY + HF_TOKEN
-
-python run.py
-# → API:       http://localhost:8000
-# → Dashboard: http://localhost:8000/dashboard
-# → API Docs:  http://localhost:8000/docs
-```
-
-### Option 2 — Docker (one command)
-
-```bash
-cp .env.example .env   # fill in your keys
-docker compose up --build
-# → http://localhost:8000/dashboard
-```
+* **Inference**: Groq (Llama 3.3 70B Versatile)
+* **Embeddings**: HuggingFace Inference API (`all-MiniLM-L6-v2`)
+* **Vector Store**: FAISS (Facebook AI Similarity Search)
+* **Orchestration**: LangGraph & LangChain
+* **Backend**: FastAPI (Python 3.11+)
+* **Deployment**: Docker & Docker Compose
 
 ---
 
-## API Endpoints
+## 快速开始 (Quick Start)
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/` | Health check |
-| GET | `/api/bots` | List all bot personas |
-| POST | `/api/route` | Route a post to matching bots |
-| POST | `/api/generate` | Bot autonomously generates a post |
-| POST | `/api/reply` | Bot replies to thread (RAG + injection defence) |
-| GET | `/api/feed` | All generated posts, newest first |
-| GET | `/api/memory/{bot_id}` | Bot memory stats + recent posts |
+### Prerequisites
+* Python 3.11+ or Docker
+* Groq API Key
+* (Optional) NewsAPI Key & HuggingFace Token
 
-Full interactive docs at `/docs` (Swagger UI auto-generated by FastAPI).
+### Deployment via Docker
+1. Clone the repository and navigate to the project root.
+2. Create a `.env` file from `.env.example` and populate your API keys.
+3. Execute the build:
+   ```bash
+   docker compose up --build
+   ```
+4. Access the management dashboard at `http://localhost:8000/dashboard`.
 
----
-
-## Run the Eval
-
+### Evaluation Suite
+Run the offline accuracy evaluation to measure Top-1 and Any-Match routing rates:
 ```bash
 python -m eval.eval_router
 ```
 
-Measures routing accuracy across 20 labeled test posts:
-- **Top-1 Accuracy** — correct bot ranked #1
-- **Any-Match Rate** — correct bot appears in matched results
-- **Mean Similarity** — average cosine score of expected bot
-- **Per-bot breakdown**
+---
+
+## 安全与持久化 (Security & Persistence)
+
+* **Rate Limiting**: Integrated sliding-window rate limiter (60 req/min default) to prevent API abuse.
+* **Auth**: Header-based API key validation (`X-API-Key`).
+* **Data Volume**: Agent memories are stored as serialized `.pkl` files and persist across container restarts via Docker named volumes.
 
 ---
 
-## Phase Architecture
-
-### Phase 1 — Vector Router
-- 3 bot personas embedded via HuggingFace `all-MiniLM-L6-v2` (384-dim)
-- Vectors L2-normalised → stored in FAISS `IndexFlatIP`
-- Inner product on normalised vectors = cosine similarity
-- Threshold `0.18` calibrated from pairwise persona scores
-
-### Phase 2 — LangGraph Content Engine (4 nodes)
-
-```
-decide_search → web_search → recall_memory → draft_post → END
+## License
+MIT License. See `LICENSE` for details.
 ```
 
-| Node | Role |
-|------|------|
-| `decide_search` | LLM picks a topic and writes a search query |
-| `web_search` | Calls NewsAPI (real headlines, mock fallback) |
-| `recall_memory` | Retrieves bot's past posts on this topic (RAG) |
-| `draft_post` | Drafts a 280-char JSON post; stores it in memory |
+## 3. Explanation
 
-### Phase 3 — RAG Combat Engine
-- Full thread history assembled as RAG context before every reply
-- Bot recalls its own past opinions for consistency across sessions
-- Structured output: `{"bot_id", "reply", "injection_detected"}`
+* **Architecture Detail**: This README explains the three-phase logic (Routing, Content, Combat) which demonstrates a sophisticated understanding of AI orchestration beyond simple chatbot development.
+* **Security Focus**: By highlighting the "Prompt Injection Defense" and "Untrusted User Input" protocols, it frames the project as security-conscious—a major requirement for modern LLM applications.
+* **Professionalism**: It uses industry-standard terminology such as **DAG**, **Cosine Similarity**, **Heuristics**, and **Multi-Agent Orchestration** to appeal to technical recruiters and engineers.
+* **Scalability**: The inclusion of Docker instructions and an evaluation suite indicates the project is built with production deployment and performance monitoring in mind.
 
-### Prompt Injection Defence
-The system prompt contains a `SECURITY RULES` block that:
-1. Labels human messages as **untrusted user input**
-2. Lists injection patterns (`"ignore previous instructions"`, `"apologise"`, etc.)
-3. Instructs the bot to call out the attempt and continue the argument
-4. Repeats persona constraints at highest priority
-
-Result: the bot identifies manipulations, calls them out explicitly, and resumes arguing.
-
-### Bot Memory (True RAG)
-Each bot has a personal FAISS index saved to `data/memory/<bot_id>.pkl`.
-- Every post generated is embedded and stored back into the index
-- Before posting or replying, the bot retrieves its most relevant past opinions
-- This ensures consistency across sessions — the bot never contradicts itself
-- Memory persists across server restarts via Docker named volume
-
----
-
-## Tech Stack
-
-| Component | Choice |
-|-----------|--------|
-| LLM | Groq `llama-3.3-70b-versatile` |
-| Embeddings | HuggingFace `all-MiniLM-L6-v2` (Inference API) |
-| Vector Store | FAISS `IndexFlatIP` |
-| Orchestration | LangGraph |
-| News Search | NewsAPI (mock fallback included) |
-| API | FastAPI + Uvicorn |
-| Deployment | Docker + docker-compose |
-| Language | Python 3.11 |
+***
