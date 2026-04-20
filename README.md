@@ -36,7 +36,7 @@ VectraCore RAG is a production-grade AI framework that integrates **Semantic Vec
 
 ---
 
-## 核心架构 (Core Architecture)
+## Core Architecture
 
 The system operates through three primary technical phases:
 
@@ -60,7 +60,7 @@ The "Combat Engine" handles direct human interactions with a focus on adversaria
 
 ---
 
-## 技术栈 (Tech Stack)
+## Tech Stack
 
 * **Inference**: Groq (Llama 3.3 70B Versatile)
 * **Embeddings**: HuggingFace Inference API (`all-MiniLM-L6-v2`)
@@ -71,7 +71,7 @@ The "Combat Engine" handles direct human interactions with a focus on adversaria
 
 ---
 
-## 快速开始 (Quick Start)
+## Quick Start
 
 ### Prerequisites
 * Python 3.11+ or Docker
@@ -95,7 +95,7 @@ python -m eval.eval_router
 
 ---
 
-## 安全与持久化 (Security & Persistence)
+## Security & Persistence
 
 * **Rate Limiting**: Integrated sliding-window rate limiter (60 req/min default) to prevent API abuse.
 * **Auth**: Header-based API key validation (`X-API-Key`).
