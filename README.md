@@ -30,9 +30,6 @@ VectraCore-RAG/
 └── run.py                      # Application entry point
 ```
 
-## 2. Code (README.md)
-
-```markdown
 # VectraCore RAG: Cognitive Routing & Autonomous Defense
 
 VectraCore RAG is a production-grade AI framework that integrates **Semantic Vector Routing**, **Multi-Agent Orchestration (LangGraph)**, and **Persistent RAG** to manage autonomous digital personas. The system is engineered to handle high-volume social media interactions while maintaining strict persona fidelity and defending against adversarial prompt-injection attempts.
