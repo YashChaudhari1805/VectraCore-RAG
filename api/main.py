@@ -1,71 +1,50 @@
 """
 api/main.py
 -----------
-FastAPI application for Grid07.
-
-Start via ``python run.py`` from the project root — never invoke this file
-directly so that ``core.*`` imports resolve against the project root.
-
-Endpoints
----------
-GET  /                      Health check
-GET  /api/bots              List all bot personas
-POST /api/route             Route a post to matching bots
-POST /api/generate          Trigger a bot to autonomously generate a post
-POST /api/reply             Bot replies to a thread (RAG + injection defence)
-GET  /api/feed              All generated posts from bot memory
-GET  /api/memory/{bot_id}   Memory summary for a specific bot
-GET  /dashboard             Serve the interactive dashboard
+FastAPI backend for Grid07.
+Start via ``python run.py`` from the project root.
 """
 
 from pathlib import Path
-
-import structlog
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+from dotenv import load_dotenv
 
-from api.schemas import (
-    BotListResponse,
-    BotSummary,
-    FeedResponse,
-    GenerateRequest,
-    HealthResponse,
-    MatchedBot,
-    MemoryResponse,
-    PostRecord,
-    ReplyRequest,
-    ReplyResponse,
-    RouteRequest,
-    RouteResponse,
-)
-from api.security import check_rate_limit, verify_api_key
+load_dotenv()
+
 from core.bot_memory import get_memory
 from core.combat_engine import generate_defense_reply
 from core.config import settings
 from core.content_engine import generate_post
-from core.logging_config import configure_logging, get_logger
 from core.personas import PERSONAS
 from core.router import build_index, route_post
 
-configure_logging()
-log = get_logger(__name__)
-
-_APP_VERSION = "2.0.0"
 _DASHBOARD_DIR = Path(__file__).parent.parent / "dashboard"
+
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app):
+    print("[startup] Building persona index...")
+    build_index()
+    for bot_id in PERSONAS:
+        get_memory(bot_id)
+    print(f"[startup] Ready — http://localhost:8000/dashboard")
+    yield
 
 app = FastAPI(
     title="Grid07 AI Engine",
     description="Cognitive routing, autonomous content generation, and RAG combat engine.",
-    version=_APP_VERSION,
-    docs_url="/docs",
-    redoc_url="/redoc",
+    version="2.0.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.allowed_origins,
+    allow_origins=settings.origins_list,
     allow_credentials=True,
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type", "X-API-Key"],
@@ -74,178 +53,109 @@ app.add_middleware(
 if _DASHBOARD_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(_DASHBOARD_DIR)), name="static")
 
-_shared_deps = [Depends(verify_api_key), Depends(check_rate_limit)]
+
+# ── Startup ───────────────────────────────────────────────────────────────────
 
 
-# ---------------------------------------------------------------------------
-# Startup
-# ---------------------------------------------------------------------------
+
+# ── Request models ────────────────────────────────────────────────────────────
+
+class RouteRequest(BaseModel):
+    post_content: str = Field(..., min_length=1)
+    threshold: float = Field(default=0.18, ge=0.0, le=1.0)
+
+class GenerateRequest(BaseModel):
+    bot_id: str
+
+class CommentRecord(BaseModel):
+    author: str
+    text: str
+
+class ReplyRequest(BaseModel):
+    bot_id: str
+    parent_post: str
+    comment_history: list[CommentRecord] = []
+    human_reply: str = Field(..., min_length=1)
 
 
-@app.on_event("startup")
-async def on_startup() -> None:
-    """Build the persona index and initialise bot memories on first boot."""
-    log.info("startup_begin")
-    build_index()
-    for bot_id in PERSONAS:
-        get_memory(bot_id)
-    log.info("startup_complete", dashboard_url=f"http://{settings.host}:{settings.port}/dashboard")
+# ── Endpoints ─────────────────────────────────────────────────────────────────
+
+@app.get("/")
+def health():
+    return {"status": "ok", "service": "Grid07 AI Engine", "version": "2.0.0"}
 
 
-# ---------------------------------------------------------------------------
-# Endpoints
-# ---------------------------------------------------------------------------
-
-
-@app.get("/", response_model=HealthResponse, tags=["Health"])
-def health() -> HealthResponse:
-    """Return a simple liveness indicator."""
-    return HealthResponse(status="ok", service="Grid07 AI Engine", version=_APP_VERSION)
-
-
-@app.get(
-    "/api/bots",
-    response_model=BotListResponse,
-    tags=["Bots"],
-    dependencies=_shared_deps,
-)
-def list_bots() -> BotListResponse:
-    """Return metadata for all configured bot personas."""
-    return BotListResponse(
-        bots=[
-            BotSummary(id=pid, display_name=p["display_name"], description=p["description"])
+@app.get("/api/bots")
+def list_bots():
+    return {
+        "bots": [
+            {"id": pid, "display_name": p["display_name"], "description": p["description"]}
             for pid, p in PERSONAS.items()
         ]
-    )
+    }
 
 
-@app.post(
-    "/api/route",
-    response_model=RouteResponse,
-    tags=["Router"],
-    dependencies=_shared_deps,
-)
-def route(req: RouteRequest) -> RouteResponse:
-    """
-    Route ``post_content`` to all bots whose cosine similarity exceeds ``threshold``.
-
-    Returns an ordered list of matched bots with their similarity scores.
-    """
+@app.post("/api/route")
+def route(req: RouteRequest):
     matches = route_post(req.post_content, threshold=req.threshold)
-    log.info("route_post", matched_count=len(matches), threshold=req.threshold)
-    return RouteResponse(
-        post_content=req.post_content,
-        threshold=req.threshold,
-        matched_bots=[MatchedBot(**m) for m in matches],
-        total_matched=len(matches),
+    return {
+        "post_content":  req.post_content,
+        "threshold":     req.threshold,
+        "matched_bots":  matches,
+        "total_matched": len(matches),
+    }
+
+
+@app.post("/api/generate")
+def generate(req: GenerateRequest):
+    if req.bot_id not in PERSONAS:
+        raise HTTPException(status_code=404, detail=f"Bot '{req.bot_id}' not found.")
+    return generate_post(req.bot_id)
+
+
+@app.post("/api/reply")
+def reply(req: ReplyRequest):
+    if req.bot_id not in PERSONAS:
+        raise HTTPException(status_code=404, detail=f"Bot '{req.bot_id}' not found.")
+    return generate_defense_reply(
+        bot_id          = req.bot_id,
+        parent_post     = req.parent_post,
+        comment_history = [c.model_dump() for c in req.comment_history],
+        human_reply     = req.human_reply,
     )
 
 
-@app.post(
-    "/api/generate",
-    tags=["Content"],
-    dependencies=_shared_deps,
-)
-def generate(req: GenerateRequest) -> dict:
-    """
-    Trigger a bot to autonomously generate a post via the LangGraph pipeline.
-
-    The bot selects a topic, searches for news, recalls past opinions, and
-    drafts a ≤280-character post that is stored in its memory.
-    """
-    if req.bot_id not in PERSONAS:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Bot '{req.bot_id}' not found. Available: {list(PERSONAS)}",
-        )
-    result = generate_post(req.bot_id)
-    log.info("post_generated", bot_id=req.bot_id, topic=result.get("topic"))
-    return result
-
-
-@app.post(
-    "/api/reply",
-    response_model=ReplyResponse,
-    tags=["Combat"],
-    dependencies=_shared_deps,
-)
-def reply(req: ReplyRequest) -> ReplyResponse:
-    """
-    Generate an in-character reply using the RAG combat engine.
-
-    Includes prompt-injection detection and enforced persona fidelity.
-    """
-    if req.bot_id not in PERSONAS:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Bot '{req.bot_id}' not found.",
-        )
-
-    result = generate_defense_reply(
-        bot_id=req.bot_id,
-        parent_post=req.parent_post,
-        comment_history=[c.model_dump() for c in req.comment_history],
-        human_reply=req.human_reply,
-    )
-    return ReplyResponse(**result)
-
-
-@app.get(
-    "/api/feed",
-    response_model=FeedResponse,
-    tags=["Feed"],
-    dependencies=_shared_deps,
-)
-def get_feed() -> FeedResponse:
-    """Return all generated posts from all bot memories, newest first."""
-    all_posts: list[dict] = []
+@app.get("/api/feed")
+def get_feed():
+    all_posts = []
     for bot_id in PERSONAS:
         memory = get_memory(bot_id)
         for post in memory.posts:
-            all_posts.append(
-                {
-                    "bot_id": bot_id,
-                    "display_name": PERSONAS[bot_id]["display_name"],
-                    **post,
-                }
-            )
-
+            all_posts.append({
+                "bot_id":       bot_id,
+                "display_name": PERSONAS[bot_id]["display_name"],
+                **post,
+            })
     all_posts.sort(key=lambda x: x["timestamp"], reverse=True)
-    return FeedResponse(
-        total=len(all_posts),
-        posts=[PostRecord(**p) for p in all_posts],
-    )
+    return {"total": len(all_posts), "posts": all_posts}
 
 
-@app.get(
-    "/api/memory/{bot_id}",
-    response_model=MemoryResponse,
-    tags=["Memory"],
-    dependencies=_shared_deps,
-)
-def get_bot_memory(bot_id: str) -> MemoryResponse:
-    """Return memory stats and the five most recent posts for a specific bot."""
+@app.get("/api/memory/{bot_id}")
+def get_bot_memory(bot_id: str):
     if bot_id not in PERSONAS:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Bot '{bot_id}' not found.",
-        )
+        raise HTTPException(status_code=404, detail=f"Bot '{bot_id}' not found.")
     memory = get_memory(bot_id)
-    return MemoryResponse(
-        bot_id=bot_id,
-        total_posts=len(memory.posts),
-        summary=memory.summary(),
-        recent_posts=memory.posts[-5:],
-    )
+    return {
+        "bot_id":       bot_id,
+        "total_posts":  len(memory.posts),
+        "summary":      memory.summary(),
+        "recent_posts": memory.posts[-5:],
+    }
 
 
-@app.get("/dashboard", tags=["Dashboard"], include_in_schema=False)
-def dashboard() -> FileResponse:
-    """Serve the interactive Grid07 dashboard."""
+@app.get("/dashboard")
+def dashboard():
     index_path = _DASHBOARD_DIR / "index.html"
     if not index_path.exists():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Dashboard not found.",
-        )
+        raise HTTPException(status_code=404, detail="Dashboard not found.")
     return FileResponse(str(index_path))
