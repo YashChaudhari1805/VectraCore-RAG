@@ -1,7 +1,7 @@
 """
 api/schemas.py
 --------------
-Pydantic request and response models for the Grid07 API.
+Pydantic request and response models for the VectraCore RAG API.
 
 Centralising schemas here keeps ``api/main.py`` focused on routing logic and
 makes it easy to version models independently of the endpoints.

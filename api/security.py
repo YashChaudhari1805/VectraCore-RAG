@@ -1,7 +1,7 @@
 """
 api/security.py
 ---------------
-Authentication and rate-limiting middleware for the Grid07 API.
+Authentication and rate-limiting middleware for the VectraCore RAG API.
 
 Authentication:
     When ``settings.auth_enabled`` is ``True``, every request must supply a

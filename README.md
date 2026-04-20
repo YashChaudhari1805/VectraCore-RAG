@@ -1,4 +1,4 @@
-# Grid07 — AI Cognitive Routing & RAG Engine
+# VectraCore RAG — AI Cognitive Routing & RAG Engine
 
 A production-ready AI system that routes social media posts to persona-matched bots,
 generates autonomous content, and engages in RAG-powered arguments with prompt injection defence.
@@ -41,7 +41,7 @@ Incoming Post
 
 ```bash
 git clone <repo-url>
-cd grid07_v2
+cd VectraCore RAG_v2
 
 python -m venv venv
 venv\Scripts\activate        # Windows

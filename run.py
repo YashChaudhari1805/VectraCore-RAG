@@ -1,7 +1,7 @@
 """
 run.py
 ------
-Project root entry point for the Grid07 API server.
+Project root entry point for the VectraCore RAG API server.
 
 Usage:
     python run.py

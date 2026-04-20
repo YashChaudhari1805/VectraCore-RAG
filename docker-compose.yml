@@ -1,9 +1,7 @@
-version: "3.9"
-
 services:
-  grid07:
+  vectracore_rag:
     build: .
-    container_name: grid07-engine
+    container_name: vectracore-engine
     ports:
       - "8000:8000"
     env_file:

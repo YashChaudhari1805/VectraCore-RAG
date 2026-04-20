@@ -1,7 +1,7 @@
 """
 core/logging_config.py
 ----------------------
-Structured JSON logging pipeline for Grid07.
+Structured JSON logging pipeline for VectraCore RAG.
 
 Configures ``structlog`` for machine-readable output in production and
 pretty console output in development.  Import ``get_logger`` in every
@@ -23,7 +23,7 @@ def _add_app_context(
     event_dict: EventDict,
 ) -> EventDict:
     """Inject constant app-level fields into every log record."""
-    event_dict["app"] = "grid07"
+    event_dict["app"] = "VectraCore RAG"
     event_dict["environment"] = settings.environment
     return event_dict
 

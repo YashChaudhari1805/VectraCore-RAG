@@ -1,7 +1,7 @@
 """
 eval/eval_router.py
 -------------------
-Offline accuracy evaluation for the Grid07 vector router.
+Offline accuracy evaluation for the VectraCore RAG vector router.
 
 Measures routing accuracy across 20 hand-labelled test posts.
 
@@ -75,7 +75,7 @@ def run_eval(threshold: float = 0.18) -> dict:
         ``per_bot``, ``threshold``, ``total_tests``.
     """
     print("=" * 65)
-    print("GRID07 — ROUTER EVALUATION")
+    print("VectraCore RAG — ROUTER EVALUATION")
     print(f"Threshold: {threshold} | Test posts: {len(_TEST_POSTS)}")
     print("=" * 65)
 

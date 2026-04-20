@@ -60,16 +60,16 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Build Docker image
-        run: docker build -t grid07:ci .
+        run: docker build -t VectraCore RAG:ci .
 
       - name: Smoke test container
         run: |
           docker run -d \
-            --name grid07-ci \
+            --name VectraCore RAG-ci \
             -p 8000:8000 \
             -e GROQ_API_KEY=dummy \
             -e ENVIRONMENT=development \
-            grid07:ci
+            VectraCore RAG:ci
           sleep 15
-          curl --fail http://localhost:8000/ || (docker logs grid07-ci && exit 1)
-          docker stop grid07-ci
+          curl --fail http://localhost:8000/ || (docker logs VectraCore RAG-ci && exit 1)
+          docker stop VectraCore RAG-ci

@@ -1,7 +1,7 @@
 """
 api/main.py
 -----------
-FastAPI backend for Grid07.
+FastAPI backend for VectraCore RAG.
 Start via ``python run.py`` from the project root.
 """
 
@@ -36,7 +36,7 @@ async def lifespan(app):
     yield
 
 app = FastAPI(
-    title="Grid07 AI Engine",
+    title="VectraCore RAG AI Engine",
     description="Cognitive routing, autonomous content generation, and RAG combat engine.",
     version="2.0.0",
     lifespan=lifespan,
@@ -82,7 +82,7 @@ class ReplyRequest(BaseModel):
 
 @app.get("/")
 def health():
-    return {"status": "ok", "service": "Grid07 AI Engine", "version": "2.0.0"}
+    return {"status": "ok", "service": "VectraCore RAG AI Engine", "version": "2.0.0"}
 
 
 @app.get("/api/bots")
