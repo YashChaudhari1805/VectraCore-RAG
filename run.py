@@ -1,23 +1,31 @@
 """
-run.py  —  project root entry point
-------------------------------------
-Start the Grid07 API server from the project root:
+run.py
+------
+Project root entry point for the Grid07 API server.
 
+Usage:
     python run.py
-    # or
     uvicorn run:app --reload --port 8000
 
-Keeping this in the root ensures all `core.*` imports resolve correctly.
+Placing the entry point at the project root guarantees that ``core.*``
+and ``api.*`` imports resolve correctly regardless of invocation method.
 """
 
 import sys
 from pathlib import Path
 
-# Guarantee project root is on sys.path regardless of how this is invoked
 sys.path.insert(0, str(Path(__file__).parent))
 
-from api.main import app          # noqa: F401  (uvicorn needs this name)
+from api.main import app  # noqa: F401 — re-exported for uvicorn
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("run:app", host="0.0.0.0", port=8000, reload=True)
+    from core.config import settings
+
+    uvicorn.run(
+        "run:app",
+        host=settings.host,
+        port=settings.port,
+        log_level=settings.log_level,
+        reload=not settings.is_production,
+    )

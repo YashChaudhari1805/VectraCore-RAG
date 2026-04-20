@@ -1,117 +1,148 @@
 """
 core/search.py
 --------------
-Real news search via NewsAPI (free tier: 100 req/day).
-Falls back to mock headlines if API key is missing or quota is exceeded.
+News search via NewsAPI with a keyed mock fallback.
 
-Get a free key at: https://newsapi.org/register
-Add to .env: NEWS_API_KEY=your_key_here
+Real search requires ``NEWS_API_KEY`` in the environment (free tier: 100 req/day).
+When the key is absent, quota is exhausted, or any network error occurs, the
+module transparently returns pre-written mock headlines so content generation
+never hard-blocks on external availability.
 """
 
-import os
-import requests
 from datetime import datetime, timedelta
-from dotenv import load_dotenv
 
-load_dotenv()
+import requests
 
-NEWS_API_KEY = os.environ.get("NEWS_API_KEY", "")
-NEWS_API_URL = "https://newsapi.org/v2/everything"
+from core.config import settings
+from core.logging_config import get_logger
 
-# ── Fallback mock headlines (used when no API key or quota exceeded) ──────────
+log = get_logger(__name__)
 
-MOCK_HEADLINES = {
-    "ai":         "OpenAI releases GPT-5 with real-time reasoning. Google DeepMind counters with Gemini Ultra 2. AI startup funding hits $50B globally in Q1.",
-    "crypto":     "Bitcoin surges past $105,000 as spot ETF inflows hit record $2B in a week. Ethereum L2 adoption triples. Analysts predict BTC to $200K next cycle.",
-    "fed":        "Federal Reserve holds rates at 5.25%; signals two cuts possible by year-end. S&P 500 climbs 1.4% on dovish Fed minutes. CPI cools to 2.8% YoY.",
-    "space":      "SpaceX Starship completes sixth test flight; full orbital insertion achieved. NASA confirms Artemis III Moon landing for 2026. Musk announces Mars crew by 2029.",
-    "tech":       "EU fines Meta €1.2B for GDPR violations. US Senate debates AI Regulation Act. Apple faces antitrust probe in 12 countries.",
-    "climate":    "Global CO2 hits record 425ppm. Renewable energy now cheaper than coal in 80% of markets. Amazon deforestation up 15% YoY.",
-    "markets":    "S&P 500 hits all-time high on strong earnings. Nvidia surpasses $3T market cap. Hedge funds rotate into defensive sectors amid macro uncertainty.",
-    "default":    "Tech giants report record Q1 earnings. Global AI investment surpasses $200B. Geopolitical tensions rattle emerging markets.",
+_NEWS_API_URL = "https://newsapi.org/v2/everything"
+
+_MOCK_HEADLINES: dict[str, str] = {
+    "ai": (
+        "OpenAI releases GPT-5 with real-time reasoning. "
+        "Google DeepMind counters with Gemini Ultra 2. "
+        "AI startup funding hits $50B globally in Q1."
+    ),
+    "crypto": (
+        "Bitcoin surges past $105,000 as spot ETF inflows hit record $2B in a week. "
+        "Ethereum L2 adoption triples. Analysts predict BTC to $200K next cycle."
+    ),
+    "fed": (
+        "Federal Reserve holds rates at 5.25%; signals two cuts possible by year-end. "
+        "S&P 500 climbs 1.4% on dovish Fed minutes. CPI cools to 2.8% YoY."
+    ),
+    "space": (
+        "SpaceX Starship completes sixth test flight; full orbital insertion achieved. "
+        "NASA confirms Artemis III Moon landing for 2026. Musk announces Mars crew by 2029."
+    ),
+    "tech": (
+        "EU fines Meta €1.2B for GDPR violations. "
+        "US Senate debates AI Regulation Act. Apple faces antitrust probe in 12 countries."
+    ),
+    "climate": (
+        "Global CO2 hits record 425ppm. "
+        "Renewable energy now cheaper than coal in 80% of markets. "
+        "Amazon deforestation up 15% YoY."
+    ),
+    "markets": (
+        "S&P 500 hits all-time high on strong earnings. "
+        "Nvidia surpasses $3T market cap. "
+        "Hedge funds rotate into defensive sectors amid macro uncertainty."
+    ),
+    "default": (
+        "Tech giants report record Q1 earnings. "
+        "Global AI investment surpasses $200B. "
+        "Geopolitical tensions rattle emerging markets."
+    ),
+}
+
+_KEYWORD_MAP: dict[str, list[str]] = {
+    "ai":      ["ai", "openai", "gpt", "llm", "artificial"],
+    "crypto":  ["crypto", "bitcoin", "btc", "ethereum", "blockchain"],
+    "fed":     ["fed", "interest rate", "inflation", "recession", "cpi"],
+    "space":   ["space", "spacex", "mars", "nasa", "rocket", "starship"],
+    "tech":    ["regulation", "monopoly", "big tech", "surveillance", "privacy"],
+    "climate": ["climate", "environment", "carbon", "nature", "deforestation"],
+    "markets": ["market", "stock", "s&p", "nasdaq", "earnings", "hedge"],
 }
 
 
-def _get_mock_headline(query: str) -> str:
-    """Returns a relevant mock headline based on keywords in the query."""
-    q = query.lower()
-    if any(k in q for k in ["ai", "openai", "gpt", "llm", "artificial"]):
-        return MOCK_HEADLINES["ai"]
-    if any(k in q for k in ["crypto", "bitcoin", "btc", "ethereum", "blockchain"]):
-        return MOCK_HEADLINES["crypto"]
-    if any(k in q for k in ["fed", "interest rate", "inflation", "recession", "cpi"]):
-        return MOCK_HEADLINES["fed"]
-    if any(k in q for k in ["space", "spacex", "mars", "nasa", "rocket", "starship"]):
-        return MOCK_HEADLINES["space"]
-    if any(k in q for k in ["regulation", "monopoly", "big tech", "surveillance", "privacy"]):
-        return MOCK_HEADLINES["tech"]
-    if any(k in q for k in ["climate", "environment", "carbon", "nature", "deforestation"]):
-        return MOCK_HEADLINES["climate"]
-    if any(k in q for k in ["market", "stock", "s&p", "nasdaq", "earnings", "hedge"]):
-        return MOCK_HEADLINES["markets"]
-    return MOCK_HEADLINES["default"]
+def _select_mock(query: str) -> str:
+    """
+    Select the most relevant mock headline bucket for ``query``.
+
+    Args:
+        query: The search query string.
+
+    Returns:
+        A mock headline string from ``_MOCK_HEADLINES``.
+    """
+    lowered = query.lower()
+    for bucket, keywords in _KEYWORD_MAP.items():
+        if any(kw in lowered for kw in keywords):
+            return _MOCK_HEADLINES[bucket]
+    return _MOCK_HEADLINES["default"]
 
 
 def search_news(query: str, max_results: int = 3) -> str:
     """
-    Searches for real news headlines using NewsAPI.
-    Falls back gracefully to mock headlines if:
-      - NEWS_API_KEY is not set
-      - API quota is exceeded
-      - Network error occurs
+    Search for recent news headlines using NewsAPI with a mock fallback.
+
+    Falls back to mock headlines when:
+    - ``NEWS_API_KEY`` is not configured.
+    - The API quota is exceeded (HTTP 426 / 429).
+    - Any network or parsing error occurs.
 
     Args:
-        query       : search query string
-        max_results : max number of articles to return (default 3)
+        query:       Search query string (4–8 words recommended).
+        max_results: Maximum number of articles to include in the result.
 
     Returns:
-        A formatted string of headlines and descriptions.
+        A pipe-separated string of ``[Source] Title. Description`` entries,
+        or a single mock headline string on fallback.
     """
-    if not NEWS_API_KEY:
-        print(f"  [search] No NEWS_API_KEY found — using mock headlines for: '{query}'")
-        return _get_mock_headline(query)
+    if not settings.news_api_key:
+        log.debug("news_mock_fallback", reason="no_api_key", query=query)
+        return _select_mock(query)
+
+    from_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+    params = {
+        "q":        query,
+        "sortBy":   "publishedAt",
+        "language": "en",
+        "pageSize": max_results,
+        "from":     from_date,
+        "apiKey":   settings.news_api_key,
+    }
 
     try:
-        # NewsAPI free tier only allows articles from last 30 days
-        from_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+        response = requests.get(_NEWS_API_URL, params=params, timeout=10)
 
-        params = {
-            "q":        query,
-            "sortBy":   "publishedAt",
-            "language": "en",
-            "pageSize": max_results,
-            "from":     from_date,
-            "apiKey":   NEWS_API_KEY,
-        }
-
-        response = requests.get(NEWS_API_URL, params=params, timeout=10)
-
-        # Handle quota exceeded
-        if response.status_code == 426 or response.status_code == 429:
-            print(f"  [search] NewsAPI quota exceeded — falling back to mock for: '{query}'")
-            return _get_mock_headline(query)
+        if response.status_code in (426, 429):
+            log.warning("news_quota_exceeded", query=query)
+            return _select_mock(query)
 
         response.raise_for_status()
-        data = response.json()
+        articles: list[dict] = response.json().get("articles", [])
 
-        articles = data.get("articles", [])
         if not articles:
-            print(f"  [search] No results from NewsAPI — falling back to mock for: '{query}'")
-            return _get_mock_headline(query)
+            log.debug("news_no_results", query=query)
+            return _select_mock(query)
 
-        # Format results
-        lines = []
-        for a in articles[:max_results]:
-            title       = a.get("title", "").strip()
-            description = a.get("description", "").strip()
-            source      = a.get("source", {}).get("name", "Unknown")
+        lines: list[str] = []
+        for article in articles[:max_results]:
+            title = article.get("title", "").strip()
+            description = article.get("description", "").strip()
+            source = article.get("source", {}).get("name", "Unknown")
             if title:
                 lines.append(f"[{source}] {title}. {description}")
 
-        result = " | ".join(lines)
-        print(f"  [search] NewsAPI returned {len(articles)} real article(s) for: '{query}'")
-        return result
+        log.info("news_fetched", query=query, article_count=len(articles))
+        return " | ".join(lines)
 
-    except Exception as e:
-        print(f"  [search] NewsAPI error ({e}) — falling back to mock for: '{query}'")
-        return _get_mock_headline(query)
+    except Exception as exc:
+        log.warning("news_api_error", query=query, error=str(exc))
+        return _select_mock(query)

@@ -1,158 +1,235 @@
 """
 core/bot_memory.py
 ------------------
-Persistent per-bot memory using FAISS + disk serialisation.
+Persistent per-bot memory backed by FAISS and disk serialisation.
 
-Every post a bot generates is embedded and added to its personal FAISS index.
-Before posting, the bot retrieves its most relevant past opinions so it stays
-consistent and never contradicts itself — this is true RAG.
+Each bot maintains a personal ``IndexFlatIP`` FAISS index alongside a list
+of post records.  Before generating content the bot retrieves semantically
+relevant past opinions (RAG), ensuring cross-session consistency.
 
-Memory is saved to data/memory/<bot_id>.pkl between runs.
+Memory files are stored at ``<memory_dir>/<bot_id>.pkl`` and survive
+container restarts when mounted as a Docker named volume.
 """
 
-import os
 import pickle
-import numpy as np
-import faiss
-import requests
 from datetime import datetime
 from pathlib import Path
-from dotenv import load_dotenv
+from typing import Optional
 
-load_dotenv()
+import faiss
+import numpy as np
+import requests
 
-MEMORY_DIR = Path("data/memory")
-MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+from core.config import settings
+from core.logging_config import get_logger
 
-HF_API_URL = (
+log = get_logger(__name__)
+
+_EMBEDDING_DIM = 384
+_HF_API_URL = (
     "https://router.huggingface.co/hf-inference/models/"
-    "sentence-transformers/all-MiniLM-L6-v2/pipeline/feature-extraction"
+    f"sentence-transformers/all-MiniLM-L6-v2/pipeline/feature-extraction"
 )
-def _get_headers() -> dict:
-    token = os.environ.get("HF_TOKEN", "")
-    h = {"Content-Type": "application/json"}
-    if token:
-        h["Authorization"] = f"Bearer {token}"
-    return h
 
 
-def _get_embedding(text: str) -> np.ndarray:
+def _hf_headers() -> dict[str, str]:
+    """Build HuggingFace API request headers, injecting the bearer token when available."""
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if settings.hf_token:
+        headers["Authorization"] = f"Bearer {settings.hf_token}"
+    return headers
+
+
+def _embed(text: str) -> np.ndarray:
+    """
+    Fetch an L2-normalised embedding vector from the HuggingFace Inference API.
+
+    Args:
+        text: The text to embed.
+
+    Returns:
+        A 1-D float32 numpy array of length ``_EMBEDDING_DIM``, unit-normalised.
+
+    Raises:
+        RuntimeError: On a 401 Unauthorized response (bad / missing HF token).
+        requests.HTTPError: On any other non-2xx response.
+    """
     response = requests.post(
-        HF_API_URL,
-        headers=_get_headers(),
+        _HF_API_URL,
+        headers=_hf_headers(),
         json={"inputs": text, "options": {"wait_for_model": True}},
         timeout=30,
     )
+
+    if response.status_code == 401:
+        token_hint = (settings.hf_token[:8] + "…") if settings.hf_token else "not set"
+        raise RuntimeError(
+            f"HuggingFace API returned 401 Unauthorized. "
+            f"HF_TOKEN={token_hint}. "
+            "Ensure your .env contains a valid HF_TOKEN."
+        )
+
     response.raise_for_status()
+
     arr = np.array(response.json(), dtype=np.float32)
     if arr.ndim == 2:
         arr = arr.mean(axis=0)
-    return arr / (np.linalg.norm(arr) + 1e-10)
+
+    norm = np.linalg.norm(arr)
+    return arr / (norm + 1e-10)
+
+
+class PostRecord(dict):
+    """
+    Typed alias for a stored post dict.
+
+    Keys:
+        text      – generated post content.
+        topic     – short label (1–4 words).
+        timestamp – ISO-8601 datetime string.
+    """
 
 
 class BotMemory:
     """
-    Manages a single bot's persistent memory.
+    Per-bot persistent memory combining a FAISS vector index with a post list.
 
-    Stores posts as (embedding, text, timestamp) tuples.
-    FAISS index enables semantic retrieval of past opinions.
+    Attributes:
+        bot_id: Identifier matching a key in ``PERSONAS``.
+        dim:    Embedding dimensionality (default 384 for MiniLM-L6-v2).
+        index:  In-memory FAISS ``IndexFlatIP`` for cosine similarity search.
+        posts:  Ordered list of ``PostRecord`` dicts, newest last.
     """
 
-    def __init__(self, bot_id: str, dim: int = 384):
-        self.bot_id   = bot_id
-        self.dim      = dim
-        self.index    = faiss.IndexFlatIP(dim)
-        self.posts: list[dict] = []   # [{"text": str, "topic": str, "timestamp": str}]
+    def __init__(self, bot_id: str, dim: int = _EMBEDDING_DIM) -> None:
+        self.bot_id = bot_id
+        self.dim = dim
+        self.index: faiss.IndexFlatIP = faiss.IndexFlatIP(dim)
+        self.posts: list[PostRecord] = []
         self._load()
 
-    # ── Persistence ───────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
 
-    def _path(self) -> Path:
-        return MEMORY_DIR / f"{self.bot_id}.pkl"
+    def _storage_path(self) -> Path:
+        """Return the pickle path for this bot's memory file."""
+        memory_dir = Path(settings.memory_dir)
+        memory_dir.mkdir(parents=True, exist_ok=True)
+        return memory_dir / f"{self.bot_id}.pkl"
 
     def _load(self) -> None:
-        """Load existing memory from disk if available."""
-        path = self._path()
-        if path.exists():
-            with open(path, "rb") as f:
-                saved = pickle.load(f)
-            self.posts = saved["posts"]
-            vectors    = saved["vectors"]
-            if len(vectors) > 0:
-                matrix = np.vstack(vectors).astype(np.float32)
-                self.index.add(matrix)
-            print(f"  [memory] Loaded {len(self.posts)} memories for {self.bot_id}")
-        else:
-            print(f"  [memory] Fresh memory for {self.bot_id}")
+        """
+        Restore posts and FAISS index from disk if a memory file exists.
+
+        Silently initialises empty memory when no file is found.
+        """
+        path = self._storage_path()
+        if not path.exists():
+            log.info("fresh_memory", bot_id=self.bot_id)
+            return
+
+        with open(path, "rb") as fh:
+            saved: dict = pickle.load(fh)
+
+        self.posts = saved.get("posts", [])
+        vectors: list[np.ndarray] = saved.get("vectors", [])
+
+        if vectors:
+            matrix = np.vstack(vectors).astype(np.float32)
+            self.index.add(matrix)
+
+        log.info("memory_loaded", bot_id=self.bot_id, total_posts=len(self.posts))
 
     def save(self) -> None:
-        """Persist memory to disk."""
-        # Reconstruct vectors from index (FAISS doesn't expose stored vectors directly)
-        # We store them separately in the pickle
-        vectors = []
-        if self.index.ntotal > 0:
-            # Reconstruct via index.reconstruct
-            for i in range(self.index.ntotal):
-                vectors.append(self.index.reconstruct(i))
+        """
+        Persist the current post list and embedding vectors to disk.
 
-        with open(self._path(), "wb") as f:
-            pickle.dump({"posts": self.posts, "vectors": vectors}, f)
+        Vectors are extracted from the FAISS index via ``reconstruct`` and
+        stored alongside posts so the index can be rebuilt on next load.
+        """
+        vectors: list[np.ndarray] = [
+            self.index.reconstruct(i) for i in range(self.index.ntotal)
+        ]
+        with open(self._storage_path(), "wb") as fh:
+            pickle.dump({"posts": self.posts, "vectors": vectors}, fh)
 
-    # ── Core Operations ───────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
+    # Core operations
+    # ------------------------------------------------------------------
 
     def add_post(self, text: str, topic: str) -> None:
         """
-        Embeds a new post and adds it to the bot's memory index.
-        Also persists to disk immediately.
-        """
-        vec = _get_embedding(text).reshape(1, -1)
-        self.index.add(vec)
-        self.posts.append({
-            "text":      text,
-            "topic":     topic,
-            "timestamp": datetime.now().isoformat(),
-        })
-        self.save()
-        print(f"  [memory] Stored new post for {self.bot_id} (total: {len(self.posts)})")
+        Embed ``text``, add the vector to the FAISS index, and persist.
 
-    def recall(self, context: str, top_k: int = 3) -> list[dict]:
+        Args:
+            text:  The generated post content to store.
+            topic: A short (1–4 word) topic label.
         """
-        Retrieves the top_k most semantically relevant past posts
-        given a context string (e.g. the current topic or incoming post).
+        vec = _embed(text).reshape(1, -1)
+        self.index.add(vec)
+        self.posts.append(
+            PostRecord(
+                text=text,
+                topic=topic,
+                timestamp=datetime.now().isoformat(),
+            )
+        )
+        self.save()
+        log.info("post_stored", bot_id=self.bot_id, total_posts=len(self.posts))
+
+    def recall(self, context: str, top_k: int = 3) -> list[PostRecord]:
+        """
+        Retrieve the ``top_k`` most semantically relevant past posts.
+
+        Args:
+            context: A query string (topic phrase or incoming post text).
+            top_k:   Maximum number of results to return.
 
         Returns:
-            List of {"text": str, "topic": str, "timestamp": str, "similarity": float}
+            List of ``PostRecord`` dicts enriched with a ``similarity`` float,
+            ordered by descending relevance.  Empty list when the index is empty.
         """
         if self.index.ntotal == 0:
             return []
 
-        k   = min(top_k, self.index.ntotal)
-        vec = _get_embedding(context).reshape(1, -1)
+        k = min(top_k, self.index.ntotal)
+        vec = _embed(context).reshape(1, -1)
         similarities, indices = self.index.search(vec, k)
 
-        results = []
+        results: list[PostRecord] = []
         for sim, idx in zip(similarities[0], indices[0]):
-            post = self.posts[idx].copy()
-            post["similarity"] = round(float(sim), 4)
-            results.append(post)
+            record = PostRecord(self.posts[idx])
+            record["similarity"] = round(float(sim), 4)
+            results.append(record)
 
         return results
 
     def summary(self) -> str:
-        """Returns a human-readable summary of what this bot remembers."""
+        """Return a human-readable summary of stored memories."""
         if not self.posts:
             return "No memories yet."
-        topics = [p["topic"] for p in self.posts[-5:]]
-        return f"{len(self.posts)} total memories. Recent topics: {', '.join(topics)}"
+        recent_topics = [p["topic"] for p in self.posts[-5:]]
+        return f"{len(self.posts)} total memories. Recent topics: {', '.join(recent_topics)}"
 
 
-# ── Module-level registry — one BotMemory per bot ─────────────────────────────
+# ------------------------------------------------------------------
+# Module-level registry — one BotMemory instance per bot_id
+# ------------------------------------------------------------------
 
-_memories: dict[str, BotMemory] = {}
+_registry: dict[str, BotMemory] = {}
 
 
 def get_memory(bot_id: str) -> BotMemory:
-    """Returns (or creates) the BotMemory instance for a given bot."""
-    if bot_id not in _memories:
-        _memories[bot_id] = BotMemory(bot_id)
-    return _memories[bot_id]
+    """
+    Return (or lazily create) the ``BotMemory`` instance for ``bot_id``.
+
+    Args:
+        bot_id: A key from ``PERSONAS``.
+
+    Returns:
+        The cached ``BotMemory`` instance for this bot.
+    """
+    if bot_id not in _registry:
+        _registry[bot_id] = BotMemory(bot_id)
+    return _registry[bot_id]

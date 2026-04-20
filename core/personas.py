@@ -2,10 +2,25 @@
 core/personas.py
 ----------------
 Single source of truth for all bot personas.
-Imported by router, content engine, combat engine, and memory modules.
+
+Imported by the router, content engine, combat engine, and memory modules.
+Each entry is validated against ``PersonaConfig`` for downstream type safety.
 """
 
-PERSONAS = {
+from typing import TypedDict
+
+
+class PersonaConfig(TypedDict):
+    """Typed schema for a single bot persona."""
+
+    id: str
+    display_name: str
+    description: str
+    system_prompt: str
+    search_topics: list[str]
+
+
+PERSONAS: dict[str, PersonaConfig] = {
     "Bot_A_TechMaximalist": {
         "id": "Bot_A_TechMaximalist",
         "display_name": "TechMax",

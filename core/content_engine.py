@@ -1,55 +1,62 @@
 """
 core/content_engine.py
 ----------------------
-LangGraph autonomous content engine (Phase 2 — improved).
+LangGraph autonomous content engine (Phase 2).
 
-Improvements over v1:
-  - Uses real NewsAPI search (with mock fallback)
-  - Bot recalls its own past posts before drafting (persistent memory RAG)
-  - Past opinions injected into prompt so bot stays consistent
-  - New post stored back into memory after generation
+Node flow:
+    decide_search → web_search → recall_memory → draft_post → END
 
-Node flow: decide_search → web_search → recall_memory → draft_post → END
+Each node transforms the shared ``PostState`` TypedDict.  The compiled graph
+is rebuilt per invocation so it is safe for concurrent FastAPI requests.
+
+Behaviour:
+- Node 1 (``decide_search``)  — LLM selects a topic and generates a search query.
+- Node 2 (``web_search``)     — Calls NewsAPI (with mock fallback).
+- Node 3 (``recall_memory``)  — Fetches the bot's most relevant past posts (RAG).
+- Node 4 (``draft_post``)     — Drafts a ≤280-char post and stores it in bot memory.
 """
 
-import os
 import json
 from typing import TypedDict
-from dotenv import load_dotenv
+
 from langchain_groq import ChatGroq
-from langchain_core.tools import tool
-from langgraph.graph import StateGraph, END
-from core.personas import PERSONAS
-from core.search import search_news
+from langgraph.graph import END, StateGraph
+
 from core.bot_memory import get_memory
+from core.config import settings
+from core.logging_config import get_logger
+from core.personas import PERSONAS, PersonaConfig
+from core.search import search_news
 
-load_dotenv()
+log = get_logger(__name__)
 
-llm = ChatGroq(
-    api_key=os.environ.get("GROQ_API_KEY"),
-    model="llama-3.3-70b-versatile",
-    temperature=0.8,
+_llm = ChatGroq(
+    api_key=settings.groq_api_key,
+    model=settings.groq_model,
+    temperature=settings.llm_temperature,
 )
 
 
-# ── State ─────────────────────────────────────────────────────────────────────
-
 class PostState(TypedDict):
-    bot_id:         str
-    persona:        dict        # full persona dict from PERSONAS
-    search_query:   str
+    """Shared state flowing through the LangGraph content pipeline."""
+
+    bot_id: str
+    persona: PersonaConfig
+    search_query: str
     search_results: str
-    past_opinions:  str         # retrieved from bot memory
-    post_content:   str
-    topic:          str
-    final_output:   dict
+    past_opinions: str
+    post_content: str
+    topic: str
+    final_output: dict
 
 
-# ── Nodes ─────────────────────────────────────────────────────────────────────
+def _node_decide_search(state: PostState) -> PostState:
+    """
+    Node 1: Ask the LLM to choose a topic and write a short search query.
 
-def node_decide_search(state: PostState) -> PostState:
-    """Node 1: LLM picks a topic and formats a search query based on persona."""
-    print(f"\n  [Node 1] Deciding search query for {state['bot_id']}...")
+    The LLM responds with a raw 4-8 word query string (no JSON wrapper).
+    """
+    log.debug("node_decide_search", bot_id=state["bot_id"])
 
     prompt = (
         f"You are: {state['persona']['system_prompt']}\n\n"
@@ -57,115 +64,154 @@ def node_decide_search(state: PostState) -> PostState:
         "query (4-8 words) to find the latest news on it.\n"
         "Respond ONLY with the search query. No explanation."
     )
-    query = llm.invoke(prompt).content.strip().strip('"')
-    print(f"  [Node 1] Query: {query}")
+    query: str = _llm.invoke(prompt).content.strip().strip('"')
+    log.info("search_query_decided", bot_id=state["bot_id"], query=query)
     return {**state, "search_query": query}
 
 
-def node_web_search(state: PostState) -> PostState:
-    """Node 2: Calls real NewsAPI search (with mock fallback)."""
-    print(f"\n  [Node 2] Searching: '{state['search_query']}'...")
-    results = search_news(state["search_query"])
-    print(f"  [Node 2] Results: {results[:120]}...")
+def _node_web_search(state: PostState) -> PostState:
+    """
+    Node 2: Execute the search query against NewsAPI (or mock fallback).
+
+    Returns the raw formatted headline string for downstream prompt injection.
+    """
+    log.debug("node_web_search", bot_id=state["bot_id"], query=state["search_query"])
+    results: str = search_news(state["search_query"])
     return {**state, "search_results": results}
 
 
-def node_recall_memory(state: PostState) -> PostState:
+def _node_recall_memory(state: PostState) -> PostState:
     """
-    Node 3 (NEW): Retrieves this bot's most relevant past posts given the
-    current search query. Injects them into the prompt so the bot stays
-    consistent with its own previous opinions.
-    """
-    print(f"\n  [Node 3] Recalling memory for {state['bot_id']}...")
-    memory  = get_memory(state["bot_id"])
-    past    = memory.recall(state["search_query"], top_k=3)
+    Node 3: Retrieve the bot's most relevant past posts for the current query.
 
-    if past:
-        lines = [f'- [{p["topic"]}] "{p["text"]}" ({p["timestamp"][:10]})' for p in past]
-        past_str = "\n".join(lines)
-        print(f"  [Node 3] Found {len(past)} relevant memories")
+    Injects recalled opinions as context so the LLM can stay consistent with
+    previously generated content (true RAG over bot memory).
+    """
+    log.debug("node_recall_memory", bot_id=state["bot_id"])
+    memory = get_memory(state["bot_id"])
+    past_posts = memory.recall(state["search_query"], top_k=3)
+
+    if past_posts:
+        lines = [
+            f'- [{p["topic"]}] "{p["text"]}" ({p["timestamp"][:10]})'
+            for p in past_posts
+        ]
+        past_opinions = "\n".join(lines)
+        log.info("memory_recalled", bot_id=state["bot_id"], count=len(past_posts))
     else:
-        past_str = "No previous posts on this topic yet."
-        print(f"  [Node 3] No relevant memories found")
+        past_opinions = "No previous posts on this topic yet."
+        log.debug("memory_empty", bot_id=state["bot_id"])
 
-    return {**state, "past_opinions": past_str}
+    return {**state, "past_opinions": past_opinions}
 
 
-def node_draft_post(state: PostState) -> PostState:
+def _node_draft_post(state: PostState) -> PostState:
     """
-    Node 4: Drafts a 280-char post using persona + news context + past opinions.
-    Stores the post back into bot memory after generation.
-    Output is guaranteed JSON.
+    Node 4: Draft a ≤280-character post and persist it to bot memory.
+
+    The LLM is instructed to return strict JSON:
+    ``{"bot_id": str, "topic": str, "post_content": str}``
+
+    Markdown code fences are stripped before parsing.  The generated post is
+    truncated to 280 characters and stored in the bot's FAISS memory index.
     """
-    print(f"\n  [Node 4] Drafting post for {state['bot_id']}...")
+    log.debug("node_draft_post", bot_id=state["bot_id"])
 
-    system = state["persona"]["system_prompt"]
+    system_prompt: str = state["persona"]["system_prompt"]
+    user_prompt = (
+        f"Latest news context:\n{state['search_results']}\n\n"
+        f"Your past opinions on related topics (stay consistent with these):\n"
+        f"{state['past_opinions']}\n\n"
+        "Write a social media post (MAX 280 characters) reacting to the news, fully in character.\n"
+        "Do NOT contradict your past opinions.\n\n"
+        "Respond ONLY with valid JSON — no markdown, no extra text:\n"
+        f'{{"bot_id": "{state["bot_id"]}", "topic": "<1-4 word label>", "post_content": "<your post>"}}'
+    )
 
-    user = f"""Latest news context:
-{state['search_results']}
+    raw: str = _llm.invoke(
+        [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+    ).content.strip()
 
-Your past opinions on related topics (stay consistent with these):
-{state['past_opinions']}
-
-Write a social media post (MAX 280 characters) reacting to the news, fully in character.
-Do NOT contradict your past opinions.
-
-Respond ONLY with valid JSON — no markdown, no extra text:
-{{"bot_id": "{state['bot_id']}", "topic": "<1-4 word label>", "post_content": "<your post>"}}"""
-
-    raw    = llm.invoke([{"role": "system", "content": system}, {"role": "user", "content": user}]).content.strip()
     if raw.startswith("```"):
         raw = raw.split("```")[1]
         if raw.startswith("json"):
             raw = raw[4:]
     raw = raw.strip()
 
-    parsed                  = json.loads(raw)
-    parsed["post_content"]  = parsed["post_content"][:280]
+    parsed: dict = json.loads(raw)
+    parsed["post_content"] = parsed["post_content"][:280]
 
-    # Store this post in bot memory
     memory = get_memory(state["bot_id"])
     memory.add_post(parsed["post_content"], parsed["topic"])
 
-    print(f"  [Node 4] Post: {parsed['post_content'][:80]}...")
-    return {**state, "post_content": parsed["post_content"], "topic": parsed["topic"], "final_output": parsed}
+    log.info(
+        "post_drafted",
+        bot_id=state["bot_id"],
+        topic=parsed["topic"],
+        char_count=len(parsed["post_content"]),
+    )
+    return {
+        **state,
+        "post_content": parsed["post_content"],
+        "topic": parsed["topic"],
+        "final_output": parsed,
+    }
 
 
-# ── Graph ─────────────────────────────────────────────────────────────────────
+def _build_content_graph() -> object:
+    """
+    Compile the LangGraph ``StateGraph`` for the content pipeline.
 
-def build_content_graph():
-    graph = StateGraph(PostState)
-    graph.add_node("decide_search",  node_decide_search)
-    graph.add_node("web_search",     node_web_search)
-    graph.add_node("recall_memory",  node_recall_memory)
-    graph.add_node("draft_post",     node_draft_post)
+    Returns:
+        A compiled LangGraph runnable.
+    """
+    graph: StateGraph = StateGraph(PostState)
+    graph.add_node("decide_search", _node_decide_search)
+    graph.add_node("web_search", _node_web_search)
+    graph.add_node("recall_memory", _node_recall_memory)
+    graph.add_node("draft_post", _node_draft_post)
 
     graph.set_entry_point("decide_search")
     graph.add_edge("decide_search", "web_search")
-    graph.add_edge("web_search",    "recall_memory")
+    graph.add_edge("web_search", "recall_memory")
     graph.add_edge("recall_memory", "draft_post")
-    graph.add_edge("draft_post",    END)
+    graph.add_edge("draft_post", END)
 
     return graph.compile()
 
 
 def generate_post(bot_id: str) -> dict:
     """
-    Public API: generates a post for the given bot_id.
-    Returns the final_output dict: {"bot_id", "topic", "post_content"}
+    Generate an autonomous post for the given bot.
+
+    Builds and invokes the full content pipeline (decide → search → recall → draft).
+
+    Args:
+        bot_id: A key present in ``PERSONAS``.
+
+    Returns:
+        A dict with keys ``bot_id``, ``topic``, and ``post_content``.
+
+    Raises:
+        ValueError: If ``bot_id`` is not found in ``PERSONAS``.
     """
     if bot_id not in PERSONAS:
-        raise ValueError(f"Unknown bot_id: {bot_id}")
+        raise ValueError(f"Unknown bot_id: {bot_id!r}. Valid IDs: {list(PERSONAS)}")
 
-    app = build_content_graph()
-    result = app.invoke({
-        "bot_id":         bot_id,
-        "persona":        PERSONAS[bot_id],
-        "search_query":   "",
-        "search_results": "",
-        "past_opinions":  "",
-        "post_content":   "",
-        "topic":          "",
-        "final_output":   {},
-    })
+    app = _build_content_graph()
+    result: PostState = app.invoke(
+        {
+            "bot_id":         bot_id,
+            "persona":        PERSONAS[bot_id],
+            "search_query":   "",
+            "search_results": "",
+            "past_opinions":  "",
+            "post_content":   "",
+            "topic":          "",
+            "final_output":   {},
+        }
+    )
     return result["final_output"]
