@@ -8,9 +8,10 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?style=flat&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![LangGraph](https://img.shields.io/badge/LangGraph-1.1+-FF6B6B?style=flat)](https://langchain-ai.github.io/langgraph/)
 [![Groq](https://img.shields.io/badge/Groq-llama--3.3--70b-F55036?style=flat)](https://groq.com)
+[![Docker](https://img.shields.io/badge/Docker-ready-2496ED?style=flat&logo=docker&logoColor=white)](https://docker.com)
 [![License](https://img.shields.io/badge/License-MIT-green?style=flat)](LICENSE)
 
-[Live Demo](#deployment) · [API Docs](#api-reference) · [Architecture](#architecture)
+[Live Demo](#deployment-on-render) · [API Docs](#api-reference) · [Architecture](#architecture)
 
 </div>
 
@@ -37,7 +38,7 @@ Built as a demonstration of production AI engineering: LangGraph orchestration, 
 | **API Key Authentication** | Strict X-API-Key enforcement with rate limiting (60 req/min/IP) |
 | **Live Dashboard** | Glassmorphic UI with dark/light mode, auth gate, feed, route tester |
 | **Docker Ready** | Multi-stage Dockerfile + docker-compose with named volume for memory |
-| **Render Deployable** | `render.yaml` included for one-click deployment |
+| **Render Deployable** | `render.yaml` included for Docker-based deployment on Render |
 
 ---
 
@@ -101,6 +102,8 @@ Result: the bot explicitly identifies manipulation attempts, calls them out, and
 
 Each bot maintains a personal FAISS index saved to `data/memory/<bot_id>.pkl`. Every generated post is embedded and stored. Before posting or replying, the bot retrieves semantically relevant past opinions. This guarantees consistency across sessions — the same bot will never contradict itself across restarts.
 
+> **Note on Render free tier:** The free tier has no persistent disk. Bot memory is stored in `/tmp` and resets on each restart/redeploy. Upgrade to a paid plan and add the `disk` block to `render.yaml` for true persistence.
+
 ---
 
 ## Quick Start
@@ -108,17 +111,17 @@ Each bot maintains a personal FAISS index saved to `data/memory/<bot_id>.pkl`. E
 ### Local (Python)
 
 ```bash
-git clone https://github.com/yourusername/VectraCore RAG.git
-cd VectraCore RAG
+git clone https://github.com/yourusername/VectraCoreRAG.git
+cd VectraCoreRAG
 
 python -m venv venv
-venv\Scripts\activate       # Windows
-source venv/bin/activate    # macOS/Linux
+source venv/bin/activate      # macOS/Linux
+venv\Scripts\activate         # Windows
 
 pip install -r requirements.txt
 
 cp .env.example .env
-# Edit .env and fill in your keys (see Environment Variables below)
+# Edit .env and fill in your keys
 
 python run.py
 ```
@@ -127,12 +130,22 @@ Open:
 - **Dashboard** → http://localhost:8000/dashboard
 - **API Docs** → http://localhost:8000/docs
 
-### Docker
+### Docker (Local)
+
+The fastest way to run the full stack locally with one command.
+
+**Prerequisites:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed and running.
 
 ```bash
 cp .env.example .env   # fill in your keys
 docker compose up --build
 ```
+
+- Add `-d` to run in the background: `docker compose up --build -d`
+- Stop with: `docker compose down`
+- View logs: `docker logs vectracore-engine`
+
+Bot memory is stored in a named Docker volume (`memory_data`) and persists across container restarts.
 
 ---
 
@@ -154,6 +167,79 @@ cp .env.example .env
 | `ALLOWED_ORIGINS` | Optional | CORS origins. Default: `http://localhost:8000,http://localhost:3000` |
 | `ENVIRONMENT` | Optional | `development` or `production`. Affects logging format. Default: `development` |
 | `PORT` | Optional | Server port. Default: `8000` |
+| `MEMORY_DIR` | Optional | Path for bot memory files. Default: `data/memory`. Set to `/tmp/vectracore_memory` on Render free tier. |
+
+---
+
+## Deployment on Render (Docker)
+
+`render.yaml` is configured for **Docker-based** deployment. Render builds your image directly from the `Dockerfile` in the repo — no manual image push required.
+
+### Steps
+
+**1. Generate an API key** (you'll need this in step 4):
+
+```bash
+# macOS / Linux
+openssl rand -hex 32
+
+# Python (any platform)
+python -c "import secrets; print(secrets.token_hex(32))"
+```
+
+**2. Push your repo to GitHub**
+
+Make sure `render.yaml`, `Dockerfile`, and all source files are committed. Never commit `.env`.
+
+**3. Create a Web Service on Render**
+
+Go to [render.com](https://render.com) → **New +** → **Web Service** → connect GitHub → select your repo.
+
+Render detects `render.yaml` automatically and uses `runtime: docker`, so it builds from your `Dockerfile`. No extra configuration needed in the UI.
+
+**4. Set environment variables**
+
+In the Render dashboard → your service → **Environment** tab, add:
+
+| Key | Value |
+|---|---|
+| `GROQ_API_KEY` | your Groq key |
+| `HF_TOKEN` | your HuggingFace token |
+| `NEWS_API_KEY` | your NewsAPI key (optional) |
+| `API_KEYS` | the key you generated in step 1 |
+| `ENVIRONMENT` | `production` |
+| `ALLOWED_ORIGINS` | `https://your-service-name.onrender.com` *(update after first deploy)* |
+
+**5. Deploy**
+
+Click **Deploy**. Docker build takes ~3–5 minutes on first run.
+
+**6. Update ALLOWED_ORIGINS**
+
+After deploy, copy your `.onrender.com` URL, update the `ALLOWED_ORIGINS` env var in the dashboard to match, then trigger a redeploy.
+
+**7. Visit your dashboard**
+
+```
+https://your-service-name.onrender.com/dashboard
+```
+
+Use the API key from step 1 to log in.
+
+### Free tier notes
+
+- **No persistent disk** — bot memory resets on every restart/redeploy (stored in `/tmp`). This is handled automatically by the `MEMORY_DIR=/tmp/vectracore_memory` env var in `render.yaml`.
+- **Spin-down** — the service sleeps after 15 minutes of inactivity. First request after sleep has a ~30 second cold start.
+- **Paid plan** — to get persistent memory across restarts, upgrade to a paid Render plan and add this block back to `render.yaml` under your service:
+
+```yaml
+    disk:
+      name: vectracore-memory
+      mountPath: /app/data/memory
+      sizeGB: 1
+```
+
+Then remove the `MEMORY_DIR` env var (or point it back to `/app/data/memory`).
 
 ---
 
@@ -234,49 +320,6 @@ Measures routing accuracy across 20 hand-labelled test posts across all three pe
 
 ---
 
-## Deployment on Render
-
-This project includes a `render.yaml` for deployment as a web service.
-
-### Steps
-
-1. Push this repo to GitHub
-
-2. Go to [render.com](https://render.com) → **New** → **Web Service** → connect your repo
-
-3. Render will detect `render.yaml` automatically. If deploying as a service inside an existing project, select your existing project when prompted.
-
-4. Set the following environment variables in the Render dashboard under **Environment**:
-
-   | Key | Value |
-   |---|---|
-   | `GROQ_API_KEY` | your Groq key |
-   | `HF_TOKEN` | your HuggingFace token |
-   | `NEWS_API_KEY` | your NewsAPI key (optional) |
-   | `API_KEYS` | a strong random key, e.g. `openssl rand -hex 32` |
-   | `ENVIRONMENT` | `production` |
-   | `ALLOWED_ORIGINS` | `https://your-render-domain.onrender.com` |
-
-5. Click **Deploy**. The service builds and starts in ~3 minutes.
-
-6. Visit `https://your-render-domain.onrender.com/dashboard`
-
-> **Note on free tier:** Render's free tier spins down after 15 minutes of inactivity and has a cold start of ~30s. The `disk` block in `render.yaml` requires a paid plan for persistent storage — on free tier, bot memory resets on restart. Remove the `disk` block if on free tier.
-
-### Generate an API key
-
-```bash
-# macOS / Linux
-openssl rand -hex 32
-
-# Python (any platform)
-python -c "import secrets; print(secrets.token_hex(32))"
-```
-
-Set the output as your `API_KEYS` value in Render. Use this same key in the dashboard login screen.
-
----
-
 ## Running Tests
 
 ```bash
@@ -296,7 +339,7 @@ Test suite covers:
 ## Project Structure
 
 ```
-VectraCore RAG/
+VectraCoreRAG/
 ├── core/
 │   ├── personas.py          Bot persona definitions (single source of truth)
 │   ├── router.py            FAISS vector router with cosine similarity
@@ -324,7 +367,7 @@ VectraCore RAG/
 ├── main.py                  CLI demo (all 3 phases)
 ├── Dockerfile               Multi-stage build
 ├── docker-compose.yml       One-command local deployment
-├── render.yaml              Render deployment config
+├── render.yaml              Render Docker deployment config
 ├── pytest.ini               Test configuration
 ├── requirements.txt         Python dependencies
 └── .env.example             Environment variable template
