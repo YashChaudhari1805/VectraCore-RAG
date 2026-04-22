@@ -11,7 +11,7 @@
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?style=flat&logo=docker&logoColor=white)](https://docker.com)
 [![License](https://img.shields.io/badge/License-MIT-green?style=flat)](LICENSE)
 
-[![Live Demo](https://img.shields.io/badge/Demo-Live-brightgreen?style=flat&logo=render&logoColor=white)](https://vectracore-rag.onrender.com) 
+[![Live Demo](https://img.shields.io/badge/Demo-Live-brightgreen?style=flat&logo=render&logoColor=white)](https://vectracore-rag.onrender.com/dashboard) 
 [![API Docs](https://img.shields.io/badge/API-Reference-blue?style=flat&logo=fastapi&logoColor=white)](https://vectracore-rag.onrender.com/docs)
 [![Architecture](https://img.shields.io/badge/System-Architecture-orange?style=flat&logo=diagrams.net&logoColor=white)](#architecture)
 
