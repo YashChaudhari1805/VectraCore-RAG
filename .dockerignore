@@ -1,0 +1,18 @@
+.env
+.env.*
+!.env.example
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pkl
+data/memory/
+.git/
+.gitignore
+*.md
+eval/
+
+# Add these new rules for the frontend
+frontend/node_modules/
+frontend/dist/
+dashboard/

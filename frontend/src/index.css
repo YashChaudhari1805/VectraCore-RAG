@@ -1,0 +1,26 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Playfair+Display:ital,wght@0,400;0,500;0,600;1,400&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply text-foreground antialiased selection:bg-accent selection:text-accent-fg;
+    background-color: #FDFBF7;
+  }
+}
+
+/* The core Sarvam Visual Identity */
+.sarvam-mesh {
+  background-color: #FDFBF7;
+  background-image: 
+    radial-gradient(circle at 50% 15%, rgba(242,114,43,0.85) 0%, rgba(242,114,43,0) 45%),
+    radial-gradient(circle at 15% 50%, rgba(196,212,242,0.9) 0%, rgba(196,212,242,0) 50%),
+    radial-gradient(circle at 85% 50%, rgba(196,212,242,0.9) 0%, rgba(196,212,242,0) 50%);
+  background-attachment: fixed;
+}
+
+.glass-panel {
+  @apply bg-white/60 backdrop-blur-xl border border-white/40 shadow-glass;
+}
